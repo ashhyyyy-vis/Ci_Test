@@ -9,10 +9,12 @@ export default function SessionReviewPage() {
   const navigate = useNavigate();
 
   const [students, setStudents] = useState([]);
+  const [original, setOriginal] = useState([]); // keep snapshot of original for comparison
   const [editedRows, setEditedRows] = useState({});
+  const [summary, setSummary] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [summary, setSummary] = useState(null); // <-- backend summary result
 
   // ------------------------------
   // FETCH STUDENT LIST
@@ -24,6 +26,7 @@ export default function SessionReviewPage() {
       });
 
       setStudents(res.data.students || []);
+      setOriginal(JSON.parse(JSON.stringify(res.data.students))); // deep clone
     } catch (err) {
       console.error("STUDENT FETCH ERROR:", err);
     }
@@ -35,17 +38,22 @@ export default function SessionReviewPage() {
   // TOGGLE PRESENT / ABSENT
   // ------------------------------
   const togglePresence = (id) => {
-    let updatedRowWasEdited = editedRows[id] || false;
+    const originalStu = original.find((s) => s.id === id);
+    const updatedStu = students.find((s) => s.id === id);
 
+    const newValue = !updatedStu.present;
+
+    // toggle in list
     setStudents((prev) =>
-      prev.map((stu) =>
-        stu.id === id ? { ...stu, present: !stu.present } : stu
-      )
+      prev.map((stu) => (stu.id === id ? { ...stu, present: newValue } : stu))
     );
+
+    // detect if changed from original
+    const changed = originalStu.present !== newValue;
 
     setEditedRows((prev) => ({
       ...prev,
-      [id]: !updatedRowWasEdited ? true : false,
+      [id]: changed,
     }));
   };
 
@@ -55,18 +63,29 @@ export default function SessionReviewPage() {
   const saveAttendance = async () => {
     setSaving(true);
 
-    const presentIds = students
-      .filter((stu) => stu.present)
-      .map((stu) => stu.id);
+    const payload = {
+      marked: [], // changed → present = true
+      unmarked: [], // changed → present = false
+    };
+
+    students.forEach((stu) => {
+      if (!editedRows[stu.id]) return;
+
+      if (stu.present) {
+        payload.marked.push(stu.id);
+      } else {
+        payload.unmarked.push(stu.id);
+      }
+    });
 
     try {
       const res = await api.post(
         `/teacher/sessions/${sessionId}/mark`,
-        { studentIds: presentIds },
+        payload,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      setSummary(res.data.summary); // show result summary
+      setSummary(res.data.summary);
     } catch (err) {
       console.error("SAVE ERROR:", err);
       alert("Failed to save attendance.");
@@ -87,98 +106,107 @@ export default function SessionReviewPage() {
         <p>Loading students...</p>
       ) : (
         <div className="bg-white shadow-xl rounded-xl p-6">
-          {/* SUMMARY BOX */}
+          {/* ------------------------- SUMMARY BOX ------------------------- */}
           {summary && (
-            <div className="mb-6 p-4 rounded-lg bg-green-100 border border-green-300">
-              <p className="font-bold text-lg text-green-800">
-                Attendance Saved Successfully!
+            <div className="mb-6 p-5 rounded-lg bg-green-100 border border-green-300">
+              <p className="font-bold text-xl text-green-800">
+                Attendance Updated Successfully!
               </p>
 
-              <p className="mt-2">
-                Marked Present:{" "}
-                <span className="font-semibold">{summary.markedCount}</span>
-              </p>
-
-              {summary.rejectedCount > 0 && (
-                <>
-                  <p className="mt-2 text-red-600 font-semibold">
-                    Rejected: {summary.rejectedCount}
-                  </p>
-
-                  <ul className="mt-1 text-sm text-red-700 list-disc ml-6">
-                    {summary.rejected.map((r) => (
-                      <li key={r.studentId}>
-                        {r.studentId} — {r.reason}
+              <div className="mt-3">
+                <p className="font-semibold text-green-900">
+                  Marked Present: {summary.markedCount}
+                </p>
+                {summary.marked.length > 0 && (
+                  <ul className="mt-2 ml-4 list-disc text-sm">
+                    {summary.marked.map((s) => (
+                      <li key={s.id}>
+                        <b>{s.MIS}</b> — {s.name}
                       </li>
                     ))}
                   </ul>
-                </>
-              )}
+                )}
+              </div>
+
+              <div className="mt-3">
+                <p className="font-semibold text-red-900">
+                  Marked Absent: {summary.unmarkedCount}
+                </p>
+                {summary.unmarked.length > 0 && (
+                  <ul className="mt-2 ml-4 list-disc text-sm">
+                    {summary.unmarked.map((s) => (
+                      <li key={s.id}>
+                        <b>{s.MIS}</b> — {s.name}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
 
               <button
                 onClick={() => navigate("/home")}
-                className="mt-4 px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                className="mt-5 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
                 Go to Home
               </button>
             </div>
           )}
 
-          {/* TABLE */}
-          <div className="overflow-x-auto max-h-[70vh]">
-            <table className="w-full border-collapse">
-              <thead className="bg-gray-200 sticky top-0">
-                <tr>
-                  <th className="p-3 text-left w-20">Present</th>
-                  <th className="p-3 text-left">MIS</th>
-                  <th className="p-3 text-left">Name</th>
-                  <th className="p-3 text-left">Class</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {students.map((stu) => (
-                  <tr
-                    key={stu.id}
-                    className={`border-b transition 
-                      ${editedRows[stu.id] ? "bg-yellow-50" : "bg-white"}
-                    `}
-                  >
-                    <td className="p-3">
-                      <input
-                        type="checkbox"
-                        checked={stu.present}
-                        onChange={() => togglePresence(stu.id)}
-                        className="w-5 h-5 cursor-pointer"
-                      />
-                    </td>
-
-                    <td className="p-3 font-bold">{stu.MIS}</td>
-
-                    <td className="p-3 text-gray-700">
-                      {stu.firstName} {stu.lastName}
-                    </td>
-
-                    <td className="p-3 text-gray-600 text-sm">
-                      {stu.class?.name}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* SAVE BUTTON */}
+          {/* ------------------------- STUDENT TABLE ------------------------- */}
           {!summary && (
-            <div className="text-center mt-6">
-              <button
-                onClick={saveAttendance}
-                disabled={saving}
-                className="px-8 py-3 rounded-lg bg-blue-600 text-white text-lg hover:bg-blue-700 disabled:bg-gray-400"
-              >
-                {saving ? "Saving..." : "Save Attendance"}
-              </button>
-            </div>
+            <>
+              <div className="overflow-x-auto max-h-[70vh]">
+                <table className="w-full border-collapse">
+                  <thead className="bg-gray-200 sticky top-0">
+                    <tr>
+                      <th className="p-3 text-left w-20">Present</th>
+                      <th className="p-3 text-left">MIS</th>
+                      <th className="p-3 text-left">Name</th>
+                      <th className="p-3 text-left">Class</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {students.map((stu) => (
+                      <tr
+                        key={stu.id}
+                        className={`border-b transition ${
+                          editedRows[stu.id] ? "bg-yellow-50" : "bg-white"
+                        }`}
+                      >
+                        <td className="p-3">
+                          <input
+                            type="checkbox"
+                            checked={stu.present}
+                            onChange={() => togglePresence(stu.id)}
+                            className="w-5 h-5 cursor-pointer"
+                          />
+                        </td>
+
+                        <td className="p-3 font-bold">{stu.MIS}</td>
+                        <td className="p-3 text-gray-700">
+                          {stu.firstName} {stu.lastName}
+                        </td>
+                        <td className="p-3 text-gray-600 text-sm">
+                          {stu.class?.name}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* SAVE BUTTON */}
+              <div className="text-center mt-6">
+                <button
+                  onClick={saveAttendance}
+                  disabled={saving}
+                  className="px-8 py-3 rounded-lg bg-blue-600 text-white text-lg hover:bg-blue-700 disabled:bg-gray-400"
+                >
+                  {saving ? "Saving..." : "Save Attendance"}
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}

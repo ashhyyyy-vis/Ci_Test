@@ -24,6 +24,9 @@ app.use("/api/student", studentScanRoutes);
 // reporting api
 app.use("/api/report", require("./routes/report"));
 
+const teacherReportRoutes = require("./routes/teacherReport");
+app.use("/api/teacher/report", teacherReportRoutes);
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", async () => {

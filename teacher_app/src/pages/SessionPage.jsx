@@ -21,17 +21,21 @@ export default function SessionPage() {
   // Live attendance
   const [presentStudents, setPresentStudents] = useState([]);
 
-  // End message
+  // When session ends
   const [sessionEnded, setSessionEnded] = useState(false);
 
-  // Interval refs
+  // Extend session UI
+  const [extendMinutes, setExtendMinutes] = useState(5);
+  const [extending, setExtending] = useState(false);
+
+  // Refs
   const qrIntervalRef = useRef(null);
   const sessionIntervalRef = useRef(null);
   const liveIntervalRef = useRef(null);
 
-  // -------------------------------------------------
-  // FETCH QR TOKEN + IMAGE
-  // -------------------------------------------------
+  // -----------------------------
+  // FETCH QR
+  // -----------------------------
   const fetchQr = async () => {
     try {
       const res = await api.get(`/teacher/sessions/${sessionId}/qr`, {
@@ -39,36 +43,15 @@ export default function SessionPage() {
       });
 
       setQrImage(res.data.qrImage);
-      setQrExpiry(res.data.validTo); // absolute utc timestamp
+      setQrExpiry(res.data.validTo);
     } catch (err) {
       console.error("QR ERROR:", err);
     }
   };
 
-  // -------------------------------------------------
-  // END SESSION
-  // -------------------------------------------------
-  const endSession = async () => {
-    try {
-      await api.post(
-        `/teacher/sessions/${sessionId}/end`,
-        {},
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      setSessionEnded(true);
-
-      setTimeout(() => {
-        navigate(`/session/${sessionId}/review`);
-      }, 800);
-    } catch (err) {
-      console.error("END SESSION ERROR:", err);
-    }
-  };
-
-  // -------------------------------------------------
-  // LIVE ATTENDANCE
-  // -------------------------------------------------
+  // -----------------------------
+  // FETCH LIVE
+  // -----------------------------
   const fetchLive = async () => {
     try {
       const res = await api.get(`/teacher/sessions/${sessionId}/live`, {
@@ -77,49 +60,90 @@ export default function SessionPage() {
 
       setPresentStudents(res.data.presentStudents || []);
     } catch (err) {
-      console.error("LIVE ATTENDANCE ERROR:", err);
+      console.error("LIVE ERROR:", err);
     }
   };
 
-  // -------------------------------------------------
-  // INITIALIZE TIMERS
-  // -------------------------------------------------
+  // -----------------------------
+  // EXTEND SESSION
+  // -----------------------------
+  const extendSession = async () => {
+    try {
+      setExtending(true);
+
+      const res = await api.post(
+        `/teacher/sessions/${sessionId}/extend`,
+        { extraMinutes: extendMinutes },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const newEndUTC = new Date(res.data.newEnd).getTime();
+      setSessionEndTime(newEndUTC);
+
+      // Restart countdown
+      setSessionEnded(false);
+
+      setExtending(false);
+      alert("Session extended successfully!");
+    } catch (err) {
+      console.error("EXTEND ERROR:", err);
+      setExtending(false);
+    }
+  };
+
+  // -----------------------------
+  // END SESSION NOW
+  // -----------------------------
+  const endSessionNow = async () => {
+    try {
+      await api.post(
+        `/teacher/sessions/${sessionId}/end`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setSessionEnded(true);
+    } catch (err) {
+      console.error("END ERROR:", err);
+    }
+  };
+
+  // -----------------------------
+  // INITIAL LOAD
+  // -----------------------------
   useEffect(() => {
     fetchQr();
     fetchLive();
 
-    // get endTime from navigation (sent from Start Session)
-    const sessionData = location.state?.session;
-    if (sessionData?.endTime) {
-      setSessionEndTime(new Date(sessionData.endTime).getTime());
+    const state = location.state?.session;
+    if (state?.endTime) {
+      setSessionEndTime(new Date(state.endTime).getTime());
     }
 
-    // ---- QR countdown ----
+    // QR countdown
     qrIntervalRef.current = setInterval(() => {
       if (!qrExpiry) return;
-
       const now = Date.now();
-      const remaining = Math.max(Math.floor((qrExpiry - now) / 1000), 0);
-      setQrRemaining(remaining);
+      const left = Math.max(Math.floor((qrExpiry - now) / 1000), 0);
+      setQrRemaining(left);
 
-      if (remaining <= 0) fetchQr();
+      if (left <= 0) fetchQr();
     }, 1000);
 
-    // ---- SESSION countdown ----
+    // Session countdown
     sessionIntervalRef.current = setInterval(() => {
       if (!sessionEndTime) return;
-
       const now = Date.now();
-      const remaining = Math.max(Math.floor((sessionEndTime - now) / 1000), 0);
-      setSessionRemaining(remaining);
+      const left = Math.max(Math.floor((sessionEndTime - now) / 1000), 0);
+      setSessionRemaining(left);
 
-      if (remaining <= 0) {
+      if (left <= 0) {
         clearInterval(sessionIntervalRef.current);
-        endSession(); // AUTO END
+        setSessionEnded(true);
       }
     }, 1000);
 
-    // ---- Live Attendance every 5 sec ----
+    // Live attendance every 5 sec
     liveIntervalRef.current = setInterval(fetchLive, 5000);
 
     return () => {
@@ -129,16 +153,15 @@ export default function SessionPage() {
     };
   }, [qrExpiry, sessionEndTime]);
 
-  // Format mm:ss
   const format = (sec) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  // -------------------------------------------------
+  // -----------------------------
   // UI
-  // -------------------------------------------------
+  // -----------------------------
   return (
     <div className="min-h-screen p-10 bg-gray-100 flex gap-6">
       {/* LEFT — LIVE ATTENDANCE */}
@@ -182,9 +205,46 @@ export default function SessionPage() {
         </div>
 
         {sessionEnded && (
-          <p className="mt-6 text-red-600 font-bold text-xl">
-            Session ended — redirecting...
-          </p>
+          <div className="mt-8 text-center">
+            <p className="text-red-600 font-bold text-xl mb-4">Session Ended</p>
+
+            <div className="flex gap-4 justify-center">
+              {/* Extend Session */}
+              <div className="bg-white p-4 rounded-xl shadow-md">
+                <p className="text-sm mb-2 font-medium">
+                  Extend Session By (mins)
+                </p>
+
+                <select
+                  className="border p-2 rounded w-32"
+                  value={extendMinutes}
+                  onChange={(e) => setExtendMinutes(Number(e.target.value))}
+                >
+                  {Array.from({ length: 15 }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>
+                      {n} min
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={extendSession}
+                  disabled={extending}
+                  className="mt-3 w-full bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
+                >
+                  {extending ? "Extending..." : "Extend"}
+                </button>
+              </div>
+
+              {/* Review Page */}
+              <button
+                onClick={() => navigate(`/session/${sessionId}/review`)}
+                className="bg-blue-600 text-white px-8 py-3 rounded-lg shadow hover:bg-blue-700"
+              >
+                Go to Review
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -209,12 +269,14 @@ export default function SessionPage() {
             </span>
           </p>
 
-          <button
-            onClick={endSession}
-            className="mt-6 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 w-full"
-          >
-            End Session Now
-          </button>
+          {!sessionEnded && (
+            <button
+              onClick={endSessionNow}
+              className="mt-6 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 w-full"
+            >
+              End Session Now
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -232,24 +232,26 @@ router.get("/:sessionId/students", auth(["teacher"]), async (req, res) => {
 router.post("/:sessionId/mark", auth(["teacher"]), async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { studentIds } = req.body;
+    const { marked = [], unmarked = [] } = req.body;
 
-    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+    // Validate input
+    if (!Array.isArray(marked) || !Array.isArray(unmarked)) {
       return res.status(400).json({
         success: false,
-        message: "studentIds must be a non-empty array",
+        message: "marked and unmarked must be arrays",
       });
     }
 
-    // Check session exists
+    // SESSION CHECK
     const session = await Session.findByPk(sessionId);
     if (!session) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Session not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Session not found",
+      });
     }
 
-    // Fetch allowed classes of the session
+    // Allowed classes for this session
     const allowedClasses = await SessionClass.findAll({
       where: { sessionId },
       attributes: ["classId"],
@@ -257,78 +259,127 @@ router.post("/:sessionId/mark", auth(["teacher"]), async (req, res) => {
 
     const allowedClassIds = allowedClasses.map((c) => c.classId);
 
-    // Fetch students to validate class membership
-    const students = await Student.findAll({
-      where: { id: studentIds },
-    });
+    let markedStudents = [];
+    let unmarkedStudents = [];
 
-    if (students.length === 0)
-      return res.status(404).json({
-        success: false,
-        message: "No valid students found",
+    // ------------------------------------
+    // 1️⃣ PROCESS MARKED STUDENTS
+    // ------------------------------------
+    if (marked.length > 0) {
+      const markList = await Student.findAll({
+        where: { id: marked },
       });
 
-    let marked = [];
-    let rejected = [];
+      for (const student of markList) {
+        if (!allowedClassIds.includes(student.classId)) continue;
 
-    for (const student of students) {
-      if (!allowedClassIds.includes(student.classId)) {
-        rejected.push({
-          studentId: student.id,
-          reason: "Student not in session class",
+        await Attendance.findOrCreate({
+          where: { sessionId, studentId: student.id },
+          defaults: { markedAt: new Date() },
         });
-        continue;
-      }
 
-      // Mark attendance if not already present
-      await Attendance.findOrCreate({
-        where: { sessionId, studentId: student.id },
-        defaults: { markedAt: new Date() },
+        await redis.sadd(`liveAttendance:${sessionId}`, student.id);
+
+        markedStudents.push({
+          id: student.id,
+          MIS: student.MIS,
+          name: `${student.firstName} ${student.lastName}`,
+        });
+      }
+    }
+
+    // ------------------------------------
+    // 2️⃣ PROCESS UNMARKED STUDENTS (DELETE)
+    // ------------------------------------
+    if (unmarked.length > 0) {
+      const unmarkList = await Student.findAll({
+        where: { id: unmarked },
       });
 
-      // Add to redis live attendance
-      await redis.sadd(`liveAttendance:${sessionId}`, student.id);
+      for (const student of unmarkList) {
+        if (!allowedClassIds.includes(student.classId)) continue;
 
-      marked.push(student.id);
+        await Attendance.destroy({
+          where: { sessionId, studentId: student.id },
+        });
+
+        await redis.srem(`liveAttendance:${sessionId}`, student.id);
+
+        unmarkedStudents.push({
+          id: student.id,
+          MIS: student.MIS,
+          name: `${student.firstName} ${student.lastName}`,
+        });
+      }
     }
 
     return res.json({
       success: true,
-      message: "Bulk attendance processed",
+      message: "Attendance updated successfully",
       summary: {
-        markedCount: marked.length,
-        rejectedCount: rejected.length,
-        marked,
-        rejected,
+        markedCount: markedStudents.length,
+        unmarkedCount: unmarkedStudents.length,
+        marked: markedStudents,
+        unmarked: unmarkedStudents,
       },
     });
   } catch (error) {
-    console.error("BULK MARK STUDENTS ERROR:", error);
+    console.error("BULK MARK/UNMARK STUDENTS ERROR:", error);
     return res.status(500).json({
       success: false,
-      message: "Server error marking students present",
+      message: "Server error updating attendance",
     });
   }
 });
 
 //POST extend session
+// POST extend session
 router.post("/:sessionId/extend", auth(["teacher"]), async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { extraMinutes } = req.body;
 
     const session = await Session.findByPk(sessionId);
-    if (!session || !session.active)
+    if (!session)
       return res
-        .status(400)
-        .json({ success: false, message: "Invalid or inactive session" });
+        .status(404)
+        .json({ success: false, message: "Session not found" });
+
+    // Reactivate if previously ended
+    if (!session.active) {
+      session.active = true;
+    }
+
+    // Extend endTime
     const newEnd = new Date(session.endTime.getTime() + extraMinutes * 60000);
     session.endTime = newEnd;
     await session.save();
 
-    await redis.expire(`activeSession:${session.id}`, extraMinutes * 60);
+    // Extend Redis TTL
+    const ttl = await redis.ttl(`activeSession:${sessionId}`);
+    if (ttl > 0) {
+      await redis.expire(`activeSession:${sessionId}`, ttl + extraMinutes * 60);
+    } else {
+      // Redis key expired → recreate it
+      await redis.set(
+        `activeSession:${sessionId}`,
+        JSON.stringify({
+          teacherId: session.teacherId,
+          courseId: session.courseId,
+          classIds: [], // or refetch
+          startTime: session.startTime,
+          endTime: newEnd,
+        }),
+        "EX",
+        extraMinutes * 60
+      );
+    }
 
-    res.json({ success: true, message: "Session extended", newEnd });
+    return res.json({
+      success: true,
+      message: "Session extended",
+      newEnd,
+    });
   } catch (error) {
     console.error("Extend session Error: ", error);
     res.status(500).json({ success: false, message: "Extend session Error" });
@@ -341,15 +392,26 @@ router.post("/:sessionId/end", auth(["teacher"]), async (req, res) => {
     const { sessionId } = req.params;
 
     const session = await Session.findByPk(sessionId);
-    if (!session || !session.active)
+
+    if (!session)
       return res
-        .status(400)
+        .status(404)
         .json({ success: false, message: "Session not found" });
 
+    // If already inactive → do nothing but return OK
+    if (!session.active) {
+      return res.json({
+        success: true,
+        message: "Session already ended",
+      });
+    }
+
+    // Mark inactive
     session.active = false;
     session.endTime = new Date();
     await session.save();
 
+    // Flush Redis live attendance to DB
     const studentIds = await redis.smembers(`liveAttendance:${sessionId}`);
     for (const sid of studentIds) {
       await Attendance.findOrCreate({
@@ -357,11 +419,14 @@ router.post("/:sessionId/end", auth(["teacher"]), async (req, res) => {
         defaults: { markedAt: new Date() },
       });
     }
+
+    // Cleanup Redis
     await redis.del(`activeSession:${sessionId}`);
     await redis.del(`liveAttendance:${sessionId}`);
-    res.json({
+
+    return res.json({
       success: true,
-      message: "Session closed Successfully",
+      message: "Session closed successfully",
     });
   } catch (error) {
     console.error("End session Error: ", error);
