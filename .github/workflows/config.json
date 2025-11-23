@@ -1,9 +1,0 @@
-{
-  "runtime": "node",
-  "runtime_version": "20.x",
-
-  "install": "npm ci",
-  "test": "npm test",
-  "build": "npm run build",
-  "start": "npm start"
-}
