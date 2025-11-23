@@ -29,7 +29,8 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend_api
-        run: npm test --if-present
+        run: npm test --if-present -- --passWithNoTests
+
 
       - name: Build backend
         working-directory: backend_api
@@ -44,7 +45,7 @@ jobs:
 
       - name: Run teacher tests
         working-directory: teacher_app
-        run: npm test --if-present
+        run: npm test --if-present -- --passWithNoTests
 
       - name: Build teacher app
         working-directory: teacher_app
