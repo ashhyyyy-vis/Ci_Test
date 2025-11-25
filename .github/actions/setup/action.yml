@@ -24,14 +24,14 @@ runs:
         echo "install_command=$(echo "$CONFIG" | jq -r '.["install-command"]')" >> $GITHUB_OUTPUT
         echo "test_command=$(echo "$CONFIG" | jq -r '.["test-command"]')" >> $GITHUB_OUTPUT
         echo "build_command=$(echo "$CONFIG" | jq -r '.["build-command"]')" >> $GITHUB_OUTPUT
-
+#Node dependency
     - name: Setup Node.js
       if: ${{ steps.config.outputs.type == 'node' }}
       uses: actions/setup-node@v3
       with:
         node-version: ${{ steps.config.outputs.version }}
         #cache: 'npm'
-
+#
     - name: Install dependencies
       shell: bash
       working-directory: ${{ inputs.app-dir }}
